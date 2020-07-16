@@ -1,0 +1,191 @@
+#thanks to Ben Robinson
+#alternatitvely you can load the XAML file using PresentationFramework in presentationframework but with some limitations
+
+import clr
+import sys
+pyt_path = r'C:\Program Files (x86)\IronPython 2.7\Lib'
+sys.path.append(pyt_path)
+
+#############-------------\-------------##############
+
+        ### UI additional references ###
+        
+clr.AddReference("System.Windows.Forms")
+clr.AddReference("System.Drawing")
+
+from System.Windows.Forms import Application, Form, FormWindowState, Screen, Label, PictureBox, PictureBoxSizeMode, AnchorStyles, BorderStyle, ComboBox, ComboBoxStyle, FormBorderStyle, CheckBox, TextBox, TextBoxBase
+from System.Windows.Forms import Button, LinkLabel, Panel, Button
+from System.Drawing import Icon, Color, Font, Point, Size#, Image
+
+#system location C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+import System.IO
+
+# Import DocumentManager and TransactionManager #
+clr.AddReference("RevitServices")
+import RevitServices
+from RevitServices.Persistence import DocumentManager
+from RevitServices.Transactions import TransactionManager
+
+doc = DocumentManager.Instance.CurrentDBDocument
+uidoc = DocumentManager.Instance.CurrentUIApplication.ActiveUIDocument
+
+#############-------------\-------------#############
+
+        ### Define some variables ###
+
+#these variables are static through the 2 windows
+bitmapImage = System.Drawing.Bitmap("C:\Me\Dynamo\WPF in Dynamo\\" + "dyna-sco-logo.png") #titlebar logo as bmp
+titleIcon = Icon.FromHandle(bitmapImage.GetHicon()) #titlebar logo as icon
+titleText = "Dimensioning"      #text that appears in the GUI titlebar
+btnHeight = 40 #declared here as used for btn locations
+btnWidth = 120
+spacing = 20    #spacing size for GUI elements to form a consistent border
+fontMessage = Font("Helvetica ", 9)
+fontCK = Font("Helvetica ", 8) #set Checkbox Font
+winSize = Size(1000,600) #consistant window size
+
+run = IN[0][0]
+linkedWalls = IN[0][1]
+allWalls = IN[0][2]
+extWalls = IN[0][3]
+multiDim = IN[0][4]
+coordSysName = IN[0][5]
+offsetDist = IN[0][6]
+
+#See if there's anything selected
+selectedIds = uidoc.Selection.GetElementIds()
+
+
+#############-------------\-------------#############
+
+        ### Global defs ###
+        
+def button(txt, loc, clc):
+    btn = Button()
+    #btnCancel.Parent = self
+    btn.Text = txt
+    btn.Anchor = (AnchorStyles.Bottom | AnchorStyles.Right)
+    btn.Location = loc
+    btn.Click += clc
+    btn.Height = btnHeight
+    btn.Width = btnWidth
+    btn.BackColor = Color.FromArgb(220, 220, 220)
+    return btn
+
+def logo(uiW, uiH):
+    logo = PictureBox()
+    bitmapImage = System.Drawing.Bitmap("C:\Me\Dynamo\WPF in Dynamo\\" + "dyna-sco-logo-text.png")              
+    logo.Image = bitmapImage
+    ratio =  float(logo.Height)/ float(logo.Width)  #needs to be a float as int will round to the nearest whole number
+    logo.Size = Size(220, 130*ratio) #fixed for consistancy
+    logo.Location = Point(spacing, (uiH - logo.Height)-spacing)
+    logo.SizeMode = PictureBoxSizeMode.Zoom     # zooms the image to fit the extent
+    logo.Anchor = (AnchorStyles.Bottom | AnchorStyles.Left)      #anchor styles lock elements to a given corner of the GUI if you allow users change size
+    return logo
+
+
+class message():
+    def __init__(self):
+        'test'
+#        self.messText = 'message'
+    def messTxt(self, selectedIds, linkedWalls, allWalls): #the __init__ method inside a class is its constructor
+#        self.messText = 'message'
+#        return self.messText
+        if selectedIds.Count == 0 and not linkedWalls and not allWalls:
+            self.messText = 'There was nothing selected, click ok, then click non-linked walls. \n\nThen click Finish in the top left to dimension them'
+            self.outSel = 1
+        elif selectedIds.Count == 0 and linkedWalls and not allWalls:
+            self.messText = 'There was nothing selected (or you picked linked walls which doesn\'t work for this). \n\nYou chose to dimension linked walls, in the active view, click ok, then go ahead and click them. \n\nThen click Finish in the top left'
+            self.outSel = 2
+        elif selectedIds.Count == 0 and linkedWalls and allWalls:
+            self.messText = 'There was nothing selected, you choose to dimension All linked walls, in the active view. \n\nClick ok, then click a wall in the link you are interested in.'
+            self.outSel = 3
+        elif selectedIds.Count == 0 and not linkedWalls and allWalls:
+            self.messText = 'There was nothing selected, you choose to dimension All (not linked) walls in the active view'
+            self.outSel  = 4
+        else:
+            for ids in selectedIds:
+                if doc.GetElement(ids).Category.Name == 'Walls'or doc.GetElement(ids).Category.Name == 'Stacked Walls':
+                    self.messText = 'We will now dimension your selection'
+                    self.outSel = 5
+                else:
+                    self.messText = 'You selected a link and All linked walls so they will All be dimensioned'
+                    self.outSel = 6
+        return self.messText, self.outSel
+
+        
+##########################-------------\-------------##########################
+
+        ### Create a Class to define the second window ####
+
+class followForm(Form):
+
+    def __init__(self): #the __init__ method inside a class is its constructor
+        self.runNextOutput = False #how we decide if we want the next window to fire 
+        
+        self.Text = titleText             
+        self.Icon = titleIcon        
+        self.Size = winSize
+        self.CenterToScreen()
+        self.FormBorderStyle = FormBorderStyle.FixedDialog  
+        
+        uiWidth = self.DisplayRectangle.Width    #get the size of the form to use to scale form elements
+        uiHeight = self.DisplayRectangle.Height
+        self.Controls.Add(logo(uiWidth, uiHeight)) #add logo       
+  
+#############-------------\-------------#############   
+
+        ### Buttons ## 
+
+        #Create Ok Button
+        btnOkClick = self.okButtonPressed #register click by user
+        btnOkLoc = Point(uiWidth - ((btnWidth * 2) + spacing + 30), uiHeight - (btnHeight + spacing))
+        btnOk = button('OK', btnOkLoc, btnOkClick) 
+
+        #Create Cancel Button
+        btnCnclClick = self.CnlButtonPressed #register click by user
+        btnCnclLoc = Point(uiWidth - (btnHeight + spacing + 90), uiHeight - (btnHeight + spacing ))
+        btnCancel = button('Cancel', btnCnclLoc, btnCnclClick)
+        
+        #add to Window
+        self.Controls.Add(btnOk)
+        self.Controls.Add(btnCancel)  
+
+#############-------------\-------------#############
+
+        ### Create Second Window Text ###
+               
+        userMessageScnd = Label()   #label displays texts
+        font = fontMessage
+        messageTest = message().messTxt(selectedIds, linkedWalls, allWalls)
+        userMessageScnd.Text = messageTest[0] 
+        self.selOut = messageTest[1]
+        #userMessageScnd.Text = dimsionInputs().messText
+        userMessageScnd.Font = font
+        userMessageScnd.Location = Point(spacing, spacing)  #all location require a point object from system.Drawing to set the location.
+        userMessageScnd.Size = Size(uiWidth-(spacing*2),(uiHeight))   #size the control with the width of the GUI to ensure it scales with different screen
+        self.Controls.Add(userMessageScnd)       #this adds control element to the GUI
+
+#############-------------\-------------#############
+
+        ### Return Info From User ##
+        
+    ### buttons ###
+    def okButtonPressed(self, sender, args):
+        self.Close()    #trigger to close the GUI when button is pressed
+        self.runNextOutput = True #if the ok button is pressed set runNextOutput as True#
+    def CnlButtonPressed(self, sender, args):
+        self.Close()
+
+##########################-------------\-------------##########################
+
+
+        ### And Run ##
+
+followForm = followForm()    
+
+if run:
+    Application.Run(followForm)
+    OUT = followForm.runNextOutput, followForm.selOut, extWalls, multiDim, coordSysName, offsetDist
+else:
+    OUT = 'did not run'
