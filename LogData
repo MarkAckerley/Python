@@ -1,0 +1,70 @@
+#https://www.youtube.com/watch?v=-ea1DjwznX4
+import os
+from datetime import datetime
+
+import clr
+clr.AddReference('RevitAPI') 
+clr.AddReference('RevitAPIUI')
+
+#load
+# Adding the DynamoRevitDS.dll module to work with the Dynamo API
+clr.AddReference('DynamoRevitDS')
+import Dynamo 
+dynamoRevit = Dynamo.Applications.DynamoRevit()
+currentWorkspace = dynamoRevit.RevitDynamoModel.CurrentWorkspace
+filename=currentWorkspace.FileName
+# Import DocumentManager
+clr.AddReference("RevitServices")
+import RevitServices
+from RevitServices.Persistence import DocumentManager
+
+rvt_doc = DocumentManager.Instance.CurrentDBDocument
+rvt_uiapp = DocumentManager.Instance.CurrentUIApplication
+rvt_app = rvt_uiapp.Application
+
+from Autodesk.Revit import DB
+from Autodesk.Revit import UI
+
+clr.AddReference('DynamoRevitDS')
+import Dynamo
+#access to the current Dynamo instance and workspace
+
+def log_usage(run):
+    """logs usage of scripts to common file"""
+
+    #################### collect data for logging
+#    LOG_FOLDER = r'C:\LocalData\log_data.txt'
+    LOG_FOLDER = r'C:\Me\Dynamo\Analytics Dynamo User\log_data.txt'
+    
+    #get current time of dynamo run
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    #get computername of run
+    computername = os.environ['COMPUTERNAME']
+
+    #get windows username
+    username = os.environ['USERNAME']
+
+    #get revit projectnumber
+    project_num = rvt_doc.ProjectInformation.Number
+
+    #get revit projectname
+    project_name = rvt_doc.ProjectInformation.Name
+    
+    dynamoRevit = Dynamo.Applications.DynamoRevit()
+    filepath = dynamoRevit.RevitDynamoModel.CurrentWorkspace.Name
+    
+    success=run
+
+    ####################
+    #format line
+    log_line = '{date}, {cmp}, {user}, {path}, {proj_num}, {proj_name}, {runTF}\n'
+
+    #populate line
+    line = log_line.format(date=now, cmp=computername, user=username, path=filepath, proj_num=project_num, proj_name=project_name, runTF=success)
+
+    #write log
+    with open(LOG_FOLDER, 'a') as fp:
+        fp.write(line)
+        
+OUT = log_usage(str(IN[0])), "success"
