@@ -1,0 +1,316 @@
+#thanks to Ben Robinson
+#alternatitvely you can load the XAML file using PresentationFramework in presentationframework but with some limitations
+
+import clr
+import sys
+pyt_path = r'C:\Program Files (x86)\IronPython 2.7\Lib'
+sys.path.append(pyt_path)
+
+#############-------------\-------------##############
+
+        ### UI additional references ###
+        
+clr.AddReference("System.Windows.Forms")
+clr.AddReference("System.Drawing")
+
+from System.Windows.Forms import Application, Form, FormWindowState, Screen, Label, PictureBox, PictureBoxSizeMode, AnchorStyles, BorderStyle, ComboBox, ComboBoxStyle, FormBorderStyle, CheckBox, TextBox, TextBoxBase
+from System.Windows.Forms import Button, LinkLabel, Panel, Button
+from System.Drawing import Icon, Color, Font, Point, Size#, Image
+
+#system location C:\Windows\Microsoft.NET\Framework64\v4.0.30319
+import System.IO
+
+#############-------------\-------------#############
+
+        ### Define some variables ###
+
+#these variables are static through the 2 windows
+bitmapImage = System.Drawing.Bitmap("C:\Me\Dynamo\WPF in Dynamo\\" + "dyna-sco-logo.png") #titlebar logo as bmp
+titleIcon = Icon.FromHandle(bitmapImage.GetHicon()) #titlebar logo as icon
+titleText = "Dimensioning"      #text that appears in the GUI titlebar
+btnHeight = 40 #declared here as used for btn locations
+btnWidth = 120
+spacing = 20    #spacing size for GUI elements to form a consistent border
+fontMessage = Font("Helvetica ", 9)
+fontCK = Font("Helvetica ", 8) #set Checkbox Font
+winSize = Size(1000,600) #consistant window size
+
+
+#############-------------\-------------#############
+
+        ### Global defs ###
+        
+def button(txt, loc, clc):
+    btn = Button()
+    #btnCancel.Parent = self
+    btn.Text = txt
+    btn.Anchor = (AnchorStyles.Bottom | AnchorStyles.Right)
+    btn.Location = loc
+    btn.Click += clc
+    btn.Height = btnHeight
+    btn.Width = btnWidth
+    btn.BackColor = Color.FromArgb(220, 220, 220)
+    return btn
+
+def logo(uiW, uiH):
+    logo = PictureBox()
+    bitmapImage = System.Drawing.Bitmap("C:\Me\Dynamo\WPF in Dynamo\\" + "dyna-sco-logo-text.png")              
+    logo.Image = bitmapImage
+    ratio =  float(logo.Height)/ float(logo.Width)  #needs to be a float as int will round to the nearest whole number
+    logo.Size = Size(220, 130*ratio) #fixed for consistancy
+    logo.Location = Point(spacing, (uiH - logo.Height)-spacing)
+    logo.SizeMode = PictureBoxSizeMode.Zoom     # zooms the image to fit the extent
+    logo.Anchor = (AnchorStyles.Bottom | AnchorStyles.Left)      #anchor styles lock elements to a given corner of the GUI if you allow users change size
+    return logo
+
+
+##########################-------------\-------------##########################
+
+        ### Create a Class to define the first window ###
+        
+# create a instance of the form class called dimsionInputs.
+#In Winforms, any window or a dialog is a Form.# 
+
+class dimsionInputs(Form):       
+
+    def __init__(self): #the __init__ method inside a class is its constructor
+
+        self.Text = titleText             
+        self.Icon = titleIcon
+        self.BackColor = Color.FromArgb(255, 255, 255)  
+        self.WindowState = FormWindowState.Normal # set maximised minimised or normal size GUI
+        self.CenterToScreen() #centres GUI to the middle of your screen 
+        self.BringToFront() #brings the GUI to the front of all open windows
+        self.Topmost = True #true to display the GUI infront of any other active forms
+        self.Size = winSize #small enough to fit on most screens
+        uiWidth = self.DisplayRectangle.Width    #get the size of the form to use to scale form elements
+        uiHeight = self.DisplayRectangle.Height
+        stHeight = uiHeight / 4.5 #the height at which the check & text boxes will start
+        htSpacing = 50 #a standard spacing vertical gap betwen check & text boxes    
+        self.FormBorderStyle = FormBorderStyle.FixedDialog      # fixed dialog stops the user from adjusting the form size. Recomended disabling this when testing to see if elements are in the wrong place.#
+        
+        ### Set Default Values ###
+        
+#        self.dropDownOutput = 'pick one'
+        
+        self.txtBoxOffOutput = '500'  #offset of dimension from wall
+        self.txtBoxCoordOutput = 'Internal' #name of coordinate system to be used
+        self.ckBoxESOutput = False  #External Side?
+        self.ckBoxLWOutput = False  #Linked Walls?
+        self.ckBoxAWOutput = False  #All Walls?
+        self.ckBoxMDOutput = False  #Multiple dims per wall?
+        self.messText = 'test'
+        self.runNextOutput = False  #how we decide if we want the next window to fire#
+        self.Controls.Add(logo(uiWidth, uiHeight)) #add logo
+        
+#############-------------\-------------#############
+
+        ### Create Main Window Text ###
+        
+        userMessage = Label()   #label displays texts
+        font = fontMessage
+        userMessage.Text = 'Automatic Dimensions for Linked or Project Walls \nPlease make sure your walls are not inside out'
+        userMessage.Font = font
+        userMessage.Location = Point(spacing, spacing)  #all location require a point object from system.Drawing to set the location.
+        userMessage.Size = Size(uiWidth-(spacing*2),(uiHeight/4)-60)   #size the control with the width of the GUI to ensure it scales with different screen
+        self.Controls.Add(userMessage)       #this adds control element to the GUI
+
+#############-------------\-------------#############
+
+        #combox drop down
+#        cBox = ComboBox()   #dropdown control form
+#        cBox.Location = Point(spacing,uiHeight/3)       
+#        cBox.Width = uiWidth -(spacing*2)
+#        cBox.Items.AddRange(tuple[(1,2,3,]))    # Adds an array of items to the list of items for a ComboBox.
+#        cBox.DropDownStyle = ComboBoxStyle.DropDownList     #setting to dropdown list prevents users from being able to add aditional text values
+#        cBox.SelectedIndexChanged += self.dropDownOutput  #.Click+= registers the press of the button to register the event handler and determine what action takes place when button clicked
+#        self.Controls.Add(cBox)   
+
+#############-------------\-------------#############
+
+        ### CHECKBOXES ##
+              
+        #checkbox Linked Walls 
+        ckBoxLW = CheckBox()
+        ckBoxLW.Name="Linked Walls"  
+        ckBoxLW.Text="Linked Walls?"
+        ckBoxLW.Location = Point(spacing,stHeight+htSpacing)       
+        ckBoxLW.Width = uiWidth -(spacing*2)
+        ckBoxLW.Font = fontCK
+        ckBoxLW.Height = 40
+        ckBoxLW.CheckStateChanged += self.ckBoxLWChecked
+
+        
+        #checkbox All Walls
+        ckBoxAW = CheckBox()
+        ckBoxAW.Name="All Walls"  
+        ckBoxAW.Text="All Walls?"
+        ckBoxAW.Location = Point(spacing,(stHeight+htSpacing*2))       
+        ckBoxAW.Width = uiWidth -(spacing*2)
+        ckBoxAW.Height = 40
+        ckBoxAW.Font = fontCK
+        ckBoxAW.CheckStateChanged += self.ckBoxAWChecked
+        
+        #checkbox External Side
+        ckBoxES = CheckBox()
+        ckBoxES.Name="External Side"  
+        ckBoxES.Text="External Side? (or internal side)"
+        ckBoxES.Location = Point(spacing,stHeight)       
+        ckBoxES.Width = uiWidth -(spacing*2)
+        ckBoxES.Font = fontCK
+        ckBoxES.Height = 40   
+        ckBoxES.CheckStateChanged += self.ckBoxESChecked
+        
+        #checkbox MultiDims
+        ckBoxMD = CheckBox()
+        ckBoxMD.Name="Multi-Dims"  
+        ckBoxMD.Text="Multi-Dims for each wall (for brick checking)"
+        ckBoxMD.Location = Point(spacing,(stHeight+htSpacing*3))       
+        ckBoxMD.Width = uiWidth -(spacing*2)
+        ckBoxMD.Height = 40
+        ckBoxMD.Font = fontCK
+        ckBoxMD.CheckStateChanged += self.ckBoxMDChecked
+        
+        #add to Window
+        self.Controls.Add(ckBoxES)
+        self.Controls.Add(ckBoxLW)
+        self.Controls.Add(ckBoxAW) 
+        self.Controls.Add(ckBoxMD)  
+
+#############-------------\-------------#############
+
+        ### TEXTBOXES ##
+     
+        #TextBox Coordinate System      
+        textBoxCoord = TextBox()
+        textBoxCoord.Width = 300
+        textBoxCoord.Text="Internal"
+        textBoxCoord.Font = fontCK
+        textBoxCoord.Location = Point(spacing + 400 ,(stHeight+htSpacing*4))
+        textBoxCoord.TextChanged += self.txtBoxCoordChanged
+        
+        #TextBox Coordinate System - Label
+        textBoxCoordLabel = Label()   #label displays texts
+        textBoxCoordLabel.Text = "Coordinate System Name"
+        textBoxCoordLabel.Width = 400
+        textBoxCoordLabel.Font = fontCK
+        textBoxCoordLabel.Location = Point(spacing,(stHeight+htSpacing*4))
+        textBoxCoordLabel.Height = 50
+        
+        #add to Window
+        self.Controls.Add(textBoxCoordLabel)  
+        self.Controls.Add(textBoxCoord)
+  
+  
+        
+        #TextBox Offset        
+        textBoxOffset = TextBox()
+        textBoxOffset.Location = Point(spacing + 400,(stHeight+htSpacing*5))       
+        textBoxOffset.Width = 300
+        textBoxOffset.Text= "500"
+        textBoxOffset.Name="Offset Distance"  
+        textBoxOffset.Font = fontCK
+        textBoxOffset.TextChanged += self.txtBoxOffChanged
+
+               
+        #TextBox Offset - Label
+        textBoxOffsetLabel = Label()   #label displays texts
+        textBoxOffsetLabel.Text = "Offset Distance"
+        textBoxOffsetLabel.Width = 200
+        textBoxOffsetLabel.Font = fontCK
+        textBoxOffsetLabel.Height = 40
+        textBoxOffsetLabel.Location = Point(spacing,(stHeight+htSpacing*5))
+        #this is how you would do a margin
+        #textBoxOffsetLabel.Margin = Padding(712,418,0,0) 
+        
+        #add to Window
+        self.Controls.Add(textBoxOffsetLabel)  
+        self.Controls.Add(textBoxOffset)
+        
+#############-------------\-------------#############   
+
+        ### Buttons ## 
+
+        #Create Ok Button
+        btnOkClick = self.okButtonPressed #register click by user
+        btnOkLoc = Point(uiWidth - ((btnWidth * 2) + spacing + 30), uiHeight - (btnHeight + spacing))
+        btnOk = button('OK', btnOkLoc, btnOkClick) 
+        
+        #Create Cancel Button
+        btnCnclClick = self.CnlButtonPressed #register click by user
+        btnCnclLoc = Point(uiWidth - (btnHeight + spacing + 90), uiHeight - (btnHeight + spacing ))
+        btnCancel = button('Cancel', btnCnclLoc, btnCnclClick)
+        
+        #add to Window
+        self.Controls.Add(btnOk)
+        self.Controls.Add(btnCancel)   
+        
+#############-------------\-------------#############
+
+        ### Return Info From User ##
+
+#these defs are the mechanism by which we assess the info from the user
+#self is the instance of the GUI form. Sender is the control/widget. args is the argument/event provided from the control        
+
+    ###dropDown ####
+#    def dropDownOutput(self, sender, args):
+#        self.dropDownOutput = sender.SelectedItem   #output the selected item.
+
+    ### checkBoxes ###    
+    def ckBoxESChecked(self, sender, args):
+        if sender.Checked:
+            self.ckBoxESOutput = True
+        #otherwise indeterminate states give erroneous results
+        else:
+            self.ckBoxESOutput = False 
+            
+    def ckBoxLWChecked(self, sender, args):
+        if sender.Checked:
+            self.ckBoxLWOutput = True
+        else:
+            self.ckBoxLWOutput = False
+    
+    def ckBoxAWChecked(self, sender, args):
+        if sender.Checked:
+            self.ckBoxAWOutput = True
+        else:
+            self.ckBoxAWOutput = False
+    
+    def ckBoxMDChecked(self, sender, args):
+        if sender.Checked:
+            self.ckBoxMDOutput = True
+        else:
+            self.ckBoxMDOutput = False
+            
+           
+    ### textBoxes ###        
+    def txtBoxOffChanged(self, sender, args):     
+        self.txtBoxOffOutput = sender.Text
+                
+        
+    def txtBoxCoordChanged(self, sender, args):
+        self.txtBoxCoordOutput = sender.Text 
+
+    ### buttons ###
+    def okButtonPressed(self, sender, args):
+        numErrorProvider = System.Windows.Forms.ErrorProvider()
+        try:
+            int(self.txtBoxOffOutput)
+            self.Close()    #trigger to close the GUI when button is pressed
+            self.runNextOutput = True #if the ok button is pressed set runNextOutput as True
+        except ValueError:        
+            numErrorProvider.SetError(sender, 'Offset must be a number')
+    def CnlButtonPressed(self, sender, args):
+        self.Close()
+        self.runNextOutput = False #if the cancel button is pressed set runNextOutput as False 
+
+        
+##########################-------------\-------------##########################
+
+        ### And Run ##
+
+dimForm = dimsionInputs()  
+
+Application.Run(dimForm)
+
+OUT = dimForm.runNextOutput, dimForm.ckBoxLWOutput, dimForm.ckBoxAWOutput, dimForm.ckBoxESOutput, dimForm.ckBoxMDOutput, dimForm.txtBoxCoordOutput, dimForm.txtBoxOffOutput,
