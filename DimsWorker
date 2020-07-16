@@ -1,0 +1,656 @@
+#thanks for all the help everyone
+import clr
+
+# Import RevitAPI
+clr.AddReference("RevitAPI")
+import Autodesk
+from Autodesk.Revit.DB import *
+import System
+
+clr.AddReference("ProtoGeometry")
+from Autodesk.DesignScript import Geometry as geom
+
+# Import Element wrapper extension methods
+clr.AddReference("RevitNodes")
+import Revit
+from Autodesk.Revit.DB import *
+
+# Import ToProtoType, ToRevitType geometry conversion extension methods
+clr.ImportExtensions(Revit.GeometryConversion)
+
+clr.AddReference("RevitAPIUI")
+from Autodesk.Revit.UI.Selection import ObjectType
+from Autodesk.Revit.UI import * #TaskDialog#
+#from Autodesk.Revit.UI import TaskDialogCommonButtons
+#from Autodesk.Revit.UI import TaskDialogResult
+
+clr.AddReference("ProtoGeometry")
+from Autodesk.DesignScript import Geometry as geom
+
+#for our selection box
+from Autodesk.Revit.UI.Selection import *
+
+# Import DocumentManager and TransactionManager #
+clr.AddReference("RevitServices")
+import RevitServices
+from RevitServices.Persistence import DocumentManager
+from RevitServices.Transactions import TransactionManager
+
+doc = DocumentManager.Instance.CurrentDBDocument
+uidoc = DocumentManager.Instance.CurrentUIApplication.ActiveUIDocument
+
+
+def isParallel(v1, v2):
+    #it needs two vectors
+    return v1.CrossProduct(v2).IsAlmostEqualTo(XYZ(0, 0, 0))
+
+def isAlmostEqualTo(v1, v2):
+    return v1.IsAlmostEqualTo(v2)
+
+def isPerpendicular(v1, v2):
+    if v1.DotProduct(v2)== 0:
+        return True
+    else:
+        return False
+
+def tolist(obj1):
+	if hasattr(obj1,"__iter__"): return obj1
+	else: return [obj1]
+
+def CurveToVector(crv):
+	vec = geom.Vector.ByTwoPoints(crv.StartPoint,crv.EndPoint)
+	return vec
+
+#set the wall orientation, depending on whether exterior or interior is selected
+def wallNormal(wall, extOrint):
+    if extOrint:
+        wallNormal = wall.Orientation.ToVector()
+    else:
+        wallNormal = wall.Orientation.Negate().ToVector()
+    return wallNormal
+
+#so to compensate for different shared position heights, we need the Internal Project Point, even if it's not current!
+#otherwise our cutting line will not have the correct Z value
+def projectPos(locationName):
+    projectLocs = doc.ProjectLocations
+    for loc in projectLocs:
+        if loc.Name == locName:
+            pos = XYZ(0,0,0)
+            locPosition = loc.GetProjectPosition(pos).Elevation
+            return locPosition
+#this takes the wall location line, shifts it up the to the view cut plane
+#and moves it out to the external edge of the wall
+def locToCutCrv(wall, wallNormal, lineEndExtend, locPos):
+    wallLn = wall.Location.Curve
+    #we're using Design Script for the geometry move, so Metric units
+    wallCrv = wallLn.ToProtoType()
+    locPositionMM = UnitUtils.ConvertFromInternalUnits(locPos, DisplayUnitType.DUT_MILLIMETERS)		
+    #take the view's level height above ground level relative to the project origin & convert to MM
+    zOfMM = UnitUtils.ConvertFromInternalUnits(doc.ActiveView.GenLevel.ProjectElevation, DisplayUnitType.DUT_MILLIMETERS)
+    #get the wall location line's height... this is where our clash line starts from
+    #we need to compensate for the Internal Project Point's shift
+    wallCrvZ = wallCrv.StartPoint.Z + locPositionMM
+    #get the cut plane offset of the view
+    #the CutPlane enumeration is ia property of PBP?
+    cPlaneH = doc.ActiveView.GetViewRange().GetOffset(PlanViewPlane.CutPlane)
+    cPlaneHiMM = UnitUtils.ConvertFromInternalUnits(cPlaneH, DisplayUnitType.DUT_MILLIMETERS)	
+    wallCrv = geom.Geometry.Translate(wallCrv, geom.Vector.ByCoordinates(0,0, zOfMM + cPlaneHiMM + locPositionMM - wallCrvZ))
+    wallwidthMM = UnitUtils.ConvertFromInternalUnits(wall.Width, DisplayUnitType.DUT_MILLIMETERS)
+    wallCrv = geom.Geometry.Translate(wallCrv, wallNormal, (wallwidthMM/2))	
+    #get wall curve info
+    wallvec = CurveToVector(wallCrv)
+    wallorig = geom.Curve.PointAtParameter(wallCrv,0.5)
+    walldir1 = geom.Vector.ByTwoPoints(wallorig, wallCrv.StartPoint)
+    walldir2 = geom.Vector.ByTwoPoints(wallorig, wallCrv.EndPoint)
+    #move points
+    ptMvSt = geom.Geometry.Translate(wallCrv.StartPoint, walldir1, lineEndExtend)
+    ptMvEnd = geom.Geometry.Translate(wallCrv.EndPoint, walldir2, lineEndExtend)
+    #create new line based on extended points
+    #this is not a model line! that requires another method
+    lineAtExternalEdgeAtCutPlaneHeight = geom.Line.ByStartPointEndPoint(ptMvSt, ptMvEnd).ToRevitType()
+    return lineAtExternalEdgeAtCutPlaneHeight
+
+#go get those references!
+#we also noeed to deal with linked references thanks to maciek.glowka lubim.co/
+def parseLinkedReference(doc, linkedRef):
+  reps = linkedRef.ConvertToStableRepresentation(doc).split(':')      
+  res = ''
+  first=True        
+      
+  for i, s in enumerate(reps):
+    t = s
+    if "RVTLINK" in s:
+      if(i<len(reps)-1):
+        if reps[i+1]=="0":
+          t = "RVTLINK"
+        else:
+          t = "0:RVTLINK"
+      else:
+        t = "0:RVTLINK"
+    if not first:
+      res = res + ":" + t
+    else:
+      res = t
+      first = False
+            
+  ref = Reference.ParseFromStableRepresentation(doc,res)
+  
+  return ref
+
+
+def addInListArray(locationsList, origList, lnkWalls, linkInstance, document):
+    locTemp = []
+    sub = ReferenceArray()
+    for eL, e in zip(locationsList, origList):
+        if eL not in locTemp:
+            locTemp.append(eL)
+            if linkedWalls:
+                linkedReference = e.Reference.CreateLinkReference(linkInstance) 
+                ref = parseLinkedReference(document,linkedReference)
+                sub.Append(ref)               
+            else:
+                sub.Append(e.Reference)
+    return sub
+
+#sadly the collector doesn't work for links so we need to use more brute force methods
+#create a virtual solid and intersect with transform!
+def linkedWallsInActiveView(docLnk,refElemLink, cropSh, solidBaseXYZ, solidTopHt, targetWalls):
+    if docLinked != None and doc.ActiveView.CropBoxVisible:
+        #Creation of the intersecting solid box for the link (in this case almost in origin)
+        linkInst = doc.GetElement(refElemLink.ElementId)
+        virtualSolid = GeometryCreationUtilities.CreateExtrusionGeometry(cropSh, solidBaseXYZ, solidTopHt)
+        virtualLinkSolid = SolidUtils.CreateTransformed(virtualSolid, linkInst.GetTotalTransform().Inverse)
+        solidIntersecFil = Autodesk.Revit.DB.ElementIntersectsSolidFilter(virtualLinkSolid)
+        instanceElementsInViewRvL = FilteredElementCollector(docLinked).WhereElementIsNotElementType().WherePasses(solidIntersecFil)
+
+    else:
+        #so we want to get all walls in the extent of the view if the view is not cropped.
+        #we don't want to use the crop region, because that might have been left at some tiny
+        #part of the screen.
+        #so we will get all the walls in the model, get the max and min of their bounding box
+        #and create a new bounding box which spans all of them
+        #we can then create a solid from it using the level offset and cutplane, and run an intersect on that
+        #Bounding boxes of walls in link 
+        allWallsInLnkNDocBB = []    
+        for lnkWall in targetWalls:
+            lnkWallBB = lnkWall.get_BoundingBox(None)
+            allWallsInLnkNDocBB.append(lnkWallBB)        
+        #Bounding boxes of walls in doc
+        #seems like it will be handy for when we don't want links
+        #for wallInDoc in wallsinDoc:
+        #    wallBB = wallInDoc.get_BoundingBox(None)
+        #    allWallsInLnkNDocBB.append(wallBB)
+        #get bb max and mins
+        bBMaxX, bBMaxY, bBMinX, bBMinY = [],[],[],[]   
+        for wallBB in allWallsInLnkNDocBB:
+            bBMinX.append(wallBB.Min.X)
+            bBMinY.append(wallBB.Min.Y)
+            bBMaxX.append(wallBB.Max.X)
+            bBMaxY.append(wallBB.Max.Y)
+        #now input the max and min values        
+        pt0 = XYZ(min(bBMinX), min(bBMinY), solidBaseHtZ)
+        pt1 = XYZ(max(bBMaxX), min(bBMinY), solidBaseHtZ)
+        pt2 = XYZ(max(bBMaxX), max(bBMaxY), solidBaseHtZ)
+        pt3 = XYZ(min(bBMinX), max(bBMaxY), solidBaseHtZ)
+        #edges in BBox coords
+        edge0 = Line.CreateBound(pt0, pt1)
+        edge1 = Line.CreateBound(pt1, pt2)
+        edge2 = Line.CreateBound(pt2, pt3)
+        edge3 = Line.CreateBound(pt3, pt0)
+        #create loop, still in BBox coords
+        edges =list()
+        edges.Add(edge0);
+        edges.Add(edge1);
+        edges.Add(edge2);
+        edges.Add(edge3);
+        baseLoop = CurveLoop.Create(edges)
+        loopList = list()
+        loopList.Add(baseLoop)
+        linkInst = doc.GetElement(refElemLinked.ElementId)
+        VirtualSolid = GeometryCreationUtilities.CreateExtrusionGeometry(loopList, solidBaseXYZ, 5)
+        VirtualLinkSolid = SolidUtils.CreateTransformed(VirtualSolid, linkInst.GetTotalTransform().Inverse)
+        solidIntersecFil = Autodesk.Revit.DB.ElementIntersectsSolidFilter(VirtualLinkSolid)
+        #we used all the walls to make our filter, but for this, we are only returning linked walls
+        fec=ElementCategoryFilter(BuiltInCategory.OST_Walls)
+        instanceElementsInViewRvL = FilteredElementCollector(docLinked).WherePasses(fec).WhereElementIsNotElementType().WherePasses(solidIntersecFil)
+        return instanceElementsInViewRvL
+
+class selFilt(ISelectionFilter):
+    #"__init__" is a reseved method in python classes. It is called as a constructor in object oriented terminology. This method is called when an object is created from a class and it allows the class to initialize the attributes of the class.
+    #it's almost like the self is implied? it has to be there but has no variable, we can't use the allow element function without a separate init, we then must have an equation to keep the code format
+	def __init__(self, element):
+		e = element
+	def AllowElement(self, e):
+		if e.ToString() == 'Autodesk.Revit.DB.Wall':
+			return True
+		else:
+			return False
+	def AllowReference(self, ref, point):
+		return true
+
+####and we are off ####
+
+#let's get some settings from the user
+#can't add sophisticated inputs like text or numbers
+#a series of these would take more time than just dimensioning it
+#refer to WPF
+#title = 'SettingsInput'
+#td = TaskDialog(title)
+#td.MainInstruction = 'Please check these settings'
+#td.CommonButtons = TaskDialogCommonButtons.Ok|TaskDialogCommonButtons.Cancel
+#can't have verification and extra checkbox
+#td.VerificationText = 'This is \'VerificationText'
+#td.AddCommandLink(TaskDialogCommandLinkId.CommandLink1,
+#                   "Use Simple Insertion Point",
+#                   "This option works for free-floating items");
+#td.ExtraCheckBoxText = 'Linked Walls?'
+#td.AllowCancellation = True
+#res = td.Show()
+#td.WasExtraCheckBoxChecked()
+run = IN[0][0]
+option = IN[0][1]
+extOrInt = IN[0][2]
+multiDim = IN[0][3]
+locName = IN[0][4]
+offDist = float(IN[0][5]) #text box input
+
+if option == 2 or option == 3 or option == 6:
+    linkedWalls = True
+else:
+    linkedWalls = False
+#if the wall is exterior we need to extend the intersect line
+#beyond the exterior face to pick up the intersecting walls
+#if the wall is interior, we don't want to extend as far
+if extOrInt:
+    intersectLineEndExtend = 500
+else:
+    intersectLineEndExtend = 0
+
+
+#view info for generating virtual solid for linked walls
+#if GenLevel fails it means we're not in a floor plan, so we run
+#a fail dialogue
+try:
+    solidBaseHtZ = doc.ActiveView.GenLevel.ProjectElevation
+    solidBaseXYZ = XYZ(0,0,1)
+    if solidBaseXYZ.Z < 1:
+        solidBaseXYZ == XYZ(0,0,1)
+    #get the cut plane offset of the view
+    solidTopHt= doc.ActiveView.GetViewRange().GetOffset(PlanViewPlane.CutPlane)
+    cropShape = doc.ActiveView.GetCropRegionShapeManager().GetCropShape()
+except:
+    failDialogue = TaskDialog('Fail')
+    failText = 'You do not appear to be in a floor plan... We need a floor plan for this to work!'    
+    failDialogue.MainInstruction = failText
+    failDialogue.Show()
+    OUT = failText
+
+#See if there's anything selected
+selectedIds = uidoc.Selection.GetElementIds()
+
+targetWalls, pickSel, refElemsLinked = [], [], []
+refElemLinked = Element
+
+#we are wanting document elements unless linked walls is True 
+obt = ObjectType.Element
+
+if linkedWalls:
+    obt = ObjectType.LinkedElement
+
+#if no selection and not a link
+#allow pick... a selection box is nice but not an option for
+#linked files, which would mean 2 different selection options for the user...
+#    targetWalls = uidoc.Selection.PickElementsByRectangle(selFilt('Self'), 'Drag a selection box')
+if option == 1: 
+    pickSel = uidoc.Selection.PickObjects(obt, selFilt('Self'), 'Please pick elements in the model')
+    #for whatever reason, the selection doesn't return the element
+    #it returns a Reference, which you can get the Id from, then the element!
+    for ref in pickSel:
+        elem = doc.GetElement(ref.ElementId)
+        targetWalls.append(elem)
+        ids = targetWalls[0].Id
+#if no selection and a linked wall, but not all of them... 
+elif option == 2:  
+    #pick 1 linked wall
+    refElemsLinked = uidoc.Selection.PickObjects(obt, "Please pick elements in the linked model")
+    #for our link info later on, we just need 1 wall
+    refElemLinked = refElemsLinked[0]
+    for refElemLinked in refElemsLinked:
+        elem = doc.GetElement(refElemLinked.ElementId)
+        docLinked = elem.GetLinkDocument()
+        linkedElement = docLinked.GetElement(refElemLinked.LinkedElementId)
+        targetWalls.append(linkedElement)	
+        ids = targetWalls[0].Id
+
+#if no selection and all linked walls    
+elif option == 3:
+    #get all walls in link instance of selected wall in the view
+    #sadly the 'active view filter' doesn't work for linked walls, so it's more complex than we'd like
+    refElemLinked = uidoc.Selection.PickObject(obt, "Please pick an element in the linked model")
+    targetWalls.append(doc.GetElement(refElemLinked.ElementId))
+    elem = doc.GetElement(refElemLinked.ElementId)
+    docLinked = elem.GetLinkDocument()
+    collector  = FilteredElementCollector(doc)
+    fec=ElementCategoryFilter(BuiltInCategory.OST_Walls)
+    targetWalls = FilteredElementCollector(docLinked,doc.ActiveView.Id).WherePasses(fec).WhereElementIsNotElementType().ToElements()
+    #walls in model
+    #targetWalls = FilteredElementCollector(doc, doc.ActiveView.Id).WherePasses(fec).WhereElementIsNotElementType().ToElements()
+    ids = targetWalls[0].Id
+        
+#if no selection and all walls in doc    
+elif option == 4:
+    #get all walls in link instance of selected wall in the view
+    #sadly the 'active view filter' doesn't work for linked walls, so it's more complex than we'd like
+    targetWalls = FilteredElementCollector(doc, doc.ActiveView.Id).OfCategory(BuiltInCategory.OST_Walls).WhereElementIsNotElementType().ToElements()
+    #defining this means we can test against it later
+    ids = targetWalls[0].Id
+
+#otherwise, get the walls from the selection
+#but if they have selected a link, we need to deal with that, this includes updating the linkedWalls var to True
+else:
+    for ids in selectedIds:
+        #if a wall/s or stacked wall/s in the model were selected, go get them
+        if option == 5:
+            targetWalls.append(doc.GetElement(ids))
+        #did they select a link or a wall in a link
+        elif doc.GetElement(ids).Category.Name == 'RVT Links' and allLinkedWalls:
+            linkedWalls = True
+            #elem = doc.GetElement(doc.GetElement(ids))
+            elem = doc.GetElement(ids)
+            docLinked = elem.GetLinkDocument()
+            linkElementCollector = FilteredElementCollector(docLinked)
+            targetWalls = linkElementCollector.OfClass(Wall).ToElements()
+            #collector  = FilteredElementCollector(doc)
+            #fec=ElementCategoryFilter(BuiltInCategory.OST_Walls)
+            #targetWalls = FilteredElementCollector(docLinked,doc.ActiveView.Id).WherePasses(fec).WhereElementIsNotElementType().ToElements()
+            #walls in model
+            #targetWalls = FilteredElementCollector(doc, doc.ActiveView.Id).WherePasses(fec).WhereElementIsNotElementType().ToElements()
+#return something to the user if they did not select anything
+if targetWalls.Count == 0:
+    failDialogue = TaskDialog('Fail')
+    failText = 'You did not select any walls, that is not going to work!'    
+    failDialogue.MainInstruction = failText
+    failDialogue.Show()
+    OUT = failText
+
+else:
+    #if I cast the selection to a list I find it easier to work with
+    targetWalls = list(targetWalls)
+
+    #we want the sub-walls from any stacked walls
+    for tWall in targetWalls:
+       if tWall.IsStackedWall == True:
+            targetWalls.extend(doc.GetElement(sub) for sub in tWall.GetStackedWallMemberIds())
+
+    #we then can remove the stacked walls
+    for tWall in targetWalls:
+       if tWall.IsStackedWall == True:
+            targetWalls.remove(tWall)
+
+    #let's go get all the walls for finding references
+    intersectedWalls = []
+    intersectedWallsNoTW = []
+    #then get all the other walls in the view and test if they intersect each wall in the the Target Walls List
+    #but if we need to look at linked walls, if so, we need a different fec
+
+    #collected walls
+    #for the linked walls, we have already collected the walls in the select statements above
+    #we just need to catch the non linked walls
+
+    #if someone has clicked on a link it gives a different output than using the selection!
+    #it returns an id rather than a reference  #      
+    if linkedWalls:
+        linkInst = doc.GetElement(refElemLinked.ElementId)
+        transform = linkInst.GetTotalTransform()
+        elem = doc.GetElement(refElemLinked.ElementId)
+        docLinked = elem.GetLinkDocument()
+        collectedWalls = linkedWallsInActiveView(docLinked,refElemLinked, cropShape, solidBaseXYZ, solidTopHt, targetWalls)
+
+    #putting this 2nd means we don't get tripped up by selecting a few linked walls which wouldn't return a category!
+    elif doc.GetElement(ids).Category.Name == 'RVT Links':
+        elem = doc.GetElement(ids)
+        linkInst = doc.GetElement(ids)
+        transform = linkInst.GetTotalTransform()
+        docLinked = elem.GetLinkDocument()
+        linkElementCollector = FilteredElementCollector(docLinked)
+        collectedWalls = linkElementCollector.OfClass(Wall).ToElements()
+
+        
+    else:
+        collectedWalls = FilteredElementCollector(doc, doc.ActiveView.Id).OfCategory(BuiltInCategory.OST_Walls).WhereElementIsNotElementType().ToElements()
+        linkInst = None
+
+
+    i = 0
+    length = len(targetWalls)
+    while i < length:
+       #create list here so list structure is correct
+        intersectedWallsTemp = []
+        #we want each target wall added to the list
+        intersectedWallsTemp.append(targetWalls[i])
+        for collectedWall in collectedWalls:
+            #add the intersecting walls to the lists
+            #if the walls are all either in the link or not, they will all have the same intersects?
+            #it may not be necessary to do any transforms because everything is consistant in itself
+            #presumably it would only ever be the view cut plane which must be compensated for
+            if targetWalls[i].Location.Curve.Intersect(collectedWall.Location.Curve) == SetComparisonResult.Overlap:
+                intersectedWallsTemp.append(collectedWall)
+        intersectedWalls.append(intersectedWallsTemp)
+        i = i + 1
+
+    #we are going to need to compensate for transforms here from Links
+    #            p0 = transform.OfPoint(edgeC.GetEndPoint(0))#.ToPoint()
+    #            p1 = transform.OfPoint(edgeC.GetEndPoint(1))#.ToPoint()
+                #edgeCT = Autodesk.DesignScript.Geometry.Line.ByStartPointEndPoint(p0,p1)
+    #            edgeCT = Line.CreateBound(p0,p1)
+     #           edgeCTNorm = edgeCT.Direction.Normalize()
+    #get Target Walls external lines for intersect check
+    exLines = []
+    for tWall in targetWalls:
+        exLines.append(locToCutCrv(tWall, wallNormal(tWall, extOrInt), intersectLineEndExtend, projectPos(locName)))
+
+    #Curves where the dimensions will be located
+    offCrves = []
+    for exLi, tWall in zip(exLines, targetWalls):
+        offCrves.append(geom.Geometry.Translate(exLi.ToProtoType(), wallNormal(tWall, extOrInt), (offDist)))
+
+    #lets get the wall edges we want
+    #only get edges intersecting target side? no this is misleading... we want any reference hitting our external wall
+    #the problem is actually that the face itsetlf is registering the intersections we don't want e.g. the wrapping ends
+    frontFacesIW = []
+    nFrontFaceIW = []
+
+    opts = Options()
+    #without compute references, none of this works
+    opts.ComputeReferences = True
+    #opts.DetailLevel = ViewDetailLevel.Fine
+    opts.IncludeNonVisibleObjects = True
+    opts.View = doc.ActiveView
+
+    edgeObj = []
+    #little list in big list
+    for intersectedWallsubList in intersectedWalls:
+        frontFaceIWTemp = []
+        nFrontFaceIWTemp = []
+        edgeObjTemp = []
+        #element in little list
+        for wallInt in intersectedWallsubList:
+            #create lists here for correct list structure
+            #geometry in each element
+            for obj in wallInt.get_Geometry(opts):
+                #walls also contain line geometry, only get solids
+                if isinstance(obj, Solid):
+                    #for each face in obj, so we're expecting to get 1 face per wall in the sub list
+                    for face in obj.Faces:
+                        #if face is normal is equal to wall normal it is the external face
+                        if isAlmostEqualTo(wallInt.Orientation, face.ComputeNormal(UV(0.5,0.5))):
+                            frontFaceIWTemp.append(face)
+                        else:
+                            nFrontFaceIWTemp.append(face)
+                    #this is every edge in all connecting walls
+                    for edge in obj.Edges:
+                        edgeObjTemp.append(edge)
+        frontFacesIW.append(frontFaceIWTemp)
+        nFrontFaceIW.append(nFrontFaceIWTemp)
+        edgeObj.append(edgeObjTemp)
+
+    #testEdgesLines = []
+    vertEdges = []
+    for subEd, exLi in zip(edgeObj, exLines):
+        vertEdgesSub = []
+        for edge in subEd:
+            #get edges which intersect
+            #if front face edge and edge intersects line and edge is vertical up or vertical down add to list
+            #we have to iterate through the external lines list
+            edgeC = edge.AsCurve()
+            edgeCNorm = edgeC.Direction.Normalize()
+             #intersect isn't working on the linked file
+            #we will likely need to transform to run the intersect correctly
+            if linkedWalls:
+                p0 = transform.OfPoint(edgeC.GetEndPoint(0))#.ToPoint()
+                p1 = transform.OfPoint(edgeC.GetEndPoint(1))#.ToPoint()
+                ######
+                #edgeCT = Autodesk.DesignScript.Geometry.Line.ByStartPointEndPoint(p0,p1)
+                edgeCT = Line.CreateBound(p0,p1)
+                #testEdgesLines.append(edgeCT)
+                edgeCTNorm = edgeCT.Direction.Normalize()
+                if exLi.Intersect(edgeCT) != SetComparisonResult.Disjoint and (edgeCTNorm.IsAlmostEqualTo(XYZ(0,0,1)) or edgeCTNorm.IsAlmostEqualTo(XYZ(0,0,-1))):
+                    vertEdgesSub.append(edge)
+            else:
+                if exLi.Intersect(edgeC) != SetComparisonResult.Disjoint and (edgeCNorm.IsAlmostEqualTo(XYZ(0,0,1)) or edgeCNorm.IsAlmostEqualTo(XYZ(0,0,-1))):
+                    vertEdgesSub.append(edge)
+        vertEdges.append(vertEdgesSub)
+
+    #so we use the X+Y values as a unique identifier of location (we're less interested in
+    #the actual unique reference, there may be 2 in the same place)
+    #we will use these as filtering and sorting values
+    #if we wanted to use this on sections we'd want to use z value?#
+    vertEdgesLoc = []
+    for vertSub in vertEdges:
+        vertSubTemp = []
+        for v in vertSub:
+            vLoc = v.AsCurve().GetEndPoint(0).X + v.AsCurve().GetEndPoint(0).Y
+            #getting some revit rounding errors, 7dp should be enough!
+            vertSubTemp.append(round(vLoc,7))
+        vertEdgesLoc.append(vertSubTemp)
+
+
+    #trying to remove stray intersect edges from adjoining walls
+    #to identify them, they are not on an intersecting wall front face
+    #their faces are not both on the target wall
+
+    #so we need all the target wall faces
+    faceTWs = []
+    for tgWall in targetWalls:
+        for obj in tgWall.get_Geometry(opts):
+        #walls also contain line geometry
+            if isinstance(obj, Solid):
+                faceTWsSub = obj.Faces
+        faceTWs.append(faceTWsSub)
+
+
+    strayEdges = []
+    #big lists of front faces & eges
+    for nFrFaIW, vertEdgesSub, faceTWsub in zip(nFrontFaceIW, vertEdges, faceTWs):
+        #sub list of front faces, different list length to strayEdgesSub so can't use zip
+        strayEdgesSub = []
+        i = 0
+        length = len(vertEdgesSub)
+        while (i < length):
+            #use Get Face on the Edge to see where they've originated from
+            #we only want edges which are to intersecting wall non-front faces
+            #this is complicated because we added the target wall to the intersecting wall list
+            #
+            if (vertEdgesSub[i].GetFace(0) in nFrFaIW) and (vertEdgesSub[i].GetFace(0) not in faceTWsub):# and ((vertEdgesSub[i].GetFace(1) in nFrFaIW) and (vertEdgesSub[i].GetFace(1) not in faceTWsub)):
+                strayEdgesSub.append(vertEdgesSub[i])
+                length = length - 1
+                #
+                strayEdgesSub.append(vertEdgesSub[i])
+                #
+                length = length - 1
+                continue
+            i = i+1
+        strayEdges.append(strayEdgesSub)
+
+    #if the wall is exterior, we want to remove references to internal wall edge
+    #do we want to feed ext or int as a list? likely that there will be a mix...
+    #we could use the wall name (contains ext / int) but there will likely be
+    #exceptions, which on a large scale makes it error prone
+    if extOrInt == True:
+        #all these lists should have the same number of sub lists
+        for vertEdgesSubLoc, vertSubEdges, straySub in zip(vertEdgesLoc, vertEdges, strayEdges):
+            i=0
+            length = len(straySub)
+            strayCLoc2 = []
+            while (i < length):
+                for stray in straySub:
+                    stLoc = stray.AsCurve().GetEndPoint(0).X + stray.AsCurve().GetEndPoint(0).Y
+                    #getting eroneous values, Revit accuracy not good enough? round is built in method
+                    if round(vertEdgesSubLoc[i],7) == round(stLoc,7):
+                        vertSubEdges.Remove(vertSubEdges[i])
+                        vertEdgesSubLoc.Remove(vertEdgesSubLoc[i])
+                        length = length - 1
+                        continue
+                i = i+1
+
+    #sort the edges using the combined XY location value
+    vertEdgesLocSorted = []
+    vertEdgesSorted = []
+    for vEsubLoc, vSubEdges in zip(vertEdgesLoc, vertEdges):
+        vertEdgesSubSorted = [x for _,x in sorted(zip(vEsubLoc,vSubEdges))]
+        vertEdgesSubLocSorted = sorted(vEsubLoc)
+        vertEdgesLocSorted.append(vertEdgesSubLocSorted)
+        vertEdgesSorted.append(vertEdgesSubSorted)
+
+    #only add uniquely located references
+    #this is awkward because we test 1 list, then add to the other list
+    #we need the Temp list, so we know what should be added to the Sub list
+    vertEdgeUniLocTemp = []
+    vertEdgeSub = []
+    vertEdgeSubRef = ReferenceArray()
+
+    #we want to make sure everything else is working before we get too obsessed by the references#
+    #this needs to be set for each sub list
+    #using a def simplifies this#
+    for vElSubSorted, vEsubSorted in zip(vertEdgesLocSorted, vertEdgesSorted):
+        vertEdgeSub.append(addInListArray(vElSubSorted, vEsubSorted, linkedWalls, linkInst, doc))
+
+
+    #we want to pair up the references to create unique dims for the brick dim checker
+    #convoluted code, ref arrays seem their own beast!
+    outRefs = []
+    for vertEdgeSubTemp in vertEdgeSub:
+        outRefsSub = []
+        #define the overall list length
+        for i in range(vertEdgeSubTemp.Size-1):
+            #create the array here so the list nesting is correct
+            vertEdgeAr = ReferenceArray()
+            #define the sub list length
+            while vertEdgeAr.Size < 2:
+                #only get add 2 indices for each sub list
+                vertEdgeAr.Append(vertEdgeSubTemp[i])
+                vertEdgeAr.Append(vertEdgeSubTemp[i+1])
+            outRefsSub.append(vertEdgeAr)
+        outRefs.append(outRefsSub)
+
+    output = []
+    #start transaction
+    TransactionManager.Instance.EnsureInTransaction(doc)
+    #create dimensions for each pair of referenes in each sub list
+
+
+    if multiDim == True:
+        for refSub, offCrv in zip(outRefs, offCrves):
+            for ref in refSub:
+                if ref.Size >= 2:
+                    output.append(doc.Create.NewDimension(doc.ActiveView, offCrv.ToRevitType(), ref))
+    else:
+        for refSub, offCrv in zip(vertEdgeSub, offCrves):
+            #I think we need to catch arrays less that 2 in number, if there is a stacked wall, the lower part might have all
+            #it's references below the cut plane, so an empty list which fails
+            if refSub.Size >= 2:
+                output.append(doc.Create.NewDimension(doc.ActiveView, offCrv.ToRevitType(), refSub))
+    #finish transaction
+    TransactionManager.Instance.TransactionTaskDone()
+
+    OUT =  targetWalls
