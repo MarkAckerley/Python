@@ -1,0 +1,33 @@
+import clr
+
+clr.AddReference("RevitAPI")
+from Autodesk.Revit.DB import *
+
+clr.AddReference("RevitServices")
+import RevitServices
+from RevitServices.Persistence import DocumentManager
+from RevitServices.Transactions import TransactionManager
+
+doc = DocumentManager.Instance.CurrentDBDocument
+
+elemList = UnwrapElement(IN[0])
+intersectList = UnwrapElement(IN[1])
+
+output = []
+
+TransactionManager.Instance.EnsureInTransaction(doc)
+for elem in elemList: #get floor from list of floors
+    elemSolid = list(elem.get_Geometry(Options()))[0]
+    for intersectElement in intersectList:
+        intElemSolid = list(intersectElement.get_Geometry(Options()))[0]
+        #see if there is a solild created when they union
+        intersectionSolid = BooleanOperationsUtils.ExecuteBooleanOperation(elemSolid, intElemSolid, BooleanOperationsType.Intersect)
+        if abs(intersectionSolid.Volume > 0.0000001): # abs is the Absolute Value of the number 
+            try:            
+                JoinGeometryUtils.JoinGeometry(doc, intersectElement, elem) #join stuff
+                output.append("Joined")
+            except:
+	            output.append(traceback.format_exc())        	            
+TransactionManager.Instance.TransactionTaskDone()
+
+OUT = output
