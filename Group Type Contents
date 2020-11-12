@@ -1,0 +1,102 @@
+import clr
+
+from System import Enum
+
+import traceback
+
+# Import DocumentManager and TransactionManager
+clr.AddReference("RevitServices")
+import RevitServices
+from RevitServices.Persistence import DocumentManager
+from RevitServices.Transactions import TransactionManager
+
+# Import RevitAPI
+clr.AddReference("RevitAPI")
+import Autodesk
+from Autodesk.Revit.DB import *
+
+doc = DocumentManager.Instance.CurrentDBDocument
+uiapp = DocumentManager.Instance.CurrentUIApplication
+app = uiapp.Application
+
+#The inputs to this node will be stored as a list in the IN variable.
+groupsList = UnwrapElement(IN[0])
+
+#what we want to get is a new instance of the group
+groupTypesAll = []
+groupTypesAllNames = []
+groupTypesAllMembers = []
+for groups in groupsList:		
+	for group in groups:			
+		id = group.GetTypeId()
+		gTypeElement = doc.GetElement(id)
+		gTypeName = Element.Name.GetValue(gTypeElement)		
+		gType = group.GetType()
+		gTypeId = group.GetTypeId()
+		
+		#this creates a temporary transaction
+		#the temporary transaction needs to be a sub-transaction
+		#feeding the type element's id gives you all the ids it deletes... 
+		#ie. all the members
+		#we then undo the delete
+		idList = []
+		TransactionManager.Instance.EnsureInTransaction(doc)
+		#temporary sub-transaction
+		trans = Autodesk.Revit.DB.SubTransaction(doc)
+		trans.Start()
+		#so we are getting wierd results if there is a missing room in a group
+		#to fix this, we need to temporarily create some walls to ensure that the placed group
+		#has all its rooms bounded (even if they are redundant
+		#those walls extent need to be big enough that they will definitely catch the rooms
+		#first we need a level to put the walls and groups at, we will just get the first one
+		collector = FilteredElementCollector(doc)
+		level = collector.OfClass(Level).ToElements()[0]
+		#first we need some curves to create walls from
+		ptSE = XYZ(-100000, -10000, 0)
+		ptNE = XYZ(100000, -10000, 0)
+		ptNW = XYZ(100000, 10000, 0)
+		ptSW = XYZ(-100000, 10000, 0)
+		
+		lnE = Line.CreateBound(ptSE, ptNE)
+		lnN = Line.CreateBound(ptNE, ptNW)
+		lnW = Line.CreateBound(ptNW, ptSW)
+		lnS = Line.CreateBound(ptSW, ptSE)
+		
+		tempWallE = Wall.Create(doc, lnE, level.Id, True)
+		tempWallN = Wall.Create(doc, lnN, level.Id, True)
+		tempWallW = Wall.Create(doc, lnW, level.Id, True)
+		tempWallS = Wall.Create(doc, lnS, level.Id, True)
+		
+		tempGroup = doc.Create.PlaceGroup(XYZ(0,0,level.Elevation),doc.GetElement(gTypeId))
+		
+		idList = tempGroup.GetMemberIds()
+
+		#get elements from ids
+		elements = []			
+		for id in idList:
+			#there are all sorts of things included in the delete
+			#we only want specific categories
+			element = doc.GetElement(id)
+			try:
+				elements.append([gTypeName, element.Name, element.Category.Name])
+			#element.Name fails for Rooms! we have to do this odd way of getting those...
+			#model lines do not get returned!
+			except AttributeError:
+				try:
+					roomNameWithNumber = Element.Name.__get__(element)
+					roomNumber = element.Number
+					roomName = roomNameWithNumber.rstrip(roomNumber)
+					roomName = roomName.rstrip(" ")					
+					elements.append([gTypeName, roomName,element.Category.Name])
+				except:
+					elements.append(traceback.format_exc())
+			except:
+				elements.append(traceback.format_exc())
+		trans.RollBack()
+		#finish transaction
+		TransactionManager.Instance.TransactionTaskDone()			
+	groupTypesAll.append(gType)
+	groupTypesAllNames.append(gTypeName)	
+	groupTypesAllMembers.append(elements)
+
+OUT = groupTypesAll, groupTypesAllNames, groupTypesAllMembers
